@@ -113,12 +113,6 @@ pub fn call(#[json] args: CallArgs) -> Response<String> {
         .unwrap()
 }
 
-#[get("/dlopen/self")]
-pub fn dlopen_self() -> String {
-    let library = unsafe_ops::dlopen_self();
-    format!("{:?}", library)
-}
-
 #[get("/dlsym")]
 pub fn dlsym(qs: Query<DlsymArgs>) -> Response<String> {
     let args = qs.into_inner();
@@ -131,6 +125,16 @@ pub fn dlsym(qs: Query<DlsymArgs>) -> Response<String> {
         .body(format!("{:p}", fptr.into_raw()))
         .unwrap()
 }
+
+#[get("/dlopen/self")]
+pub fn dlopen_self() -> Response<String> {
+    let lib = unsafe_ops::dlopen_self();
+    Response::builder()
+        .header("Content-Type", "text/plain")
+        .body(format!("{:p}", lib.into_raw()))
+        .unwrap()
+}
+
 
 #[get("/dlopen")]
 pub fn dlopen_library(qs: Query<DlopenArgs>) -> Response<String> {
