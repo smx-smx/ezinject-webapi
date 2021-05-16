@@ -1,16 +1,62 @@
-use std::time::Duration;
+use std::{convert::TryInto, io::Bytes, num::ParseIntError, time::Duration, u64, usize};
 use std::net::{IpAddr};
 use std::convert;
 use tokio::sync::oneshot;
 use tokio::runtime::Runtime;
 
+use serde::Deserialize;
+
 //use std::ffi::CString;
 //use libc::{dlopen, c_void, c_char};
 use crate::unsafe_ops;
 use rweb::*;
+use rweb::hyper::*;
 
+type WebResult<T> = std::result::Result<T, Rejection>;
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
+
+macro_rules! unwrap_or_return {
+    ( $e:expr, $res:expr ) => {
+        match $e {
+            Ok(x) => x,
+            Err(_) => return $res //return format!($msg),
+        }
+    }
+}
+
+fn bad_request(text: &str) -> Response<String> {
+    Response::builder()
+        .header("Content-Type", "text/plain")
+        .status(400)
+        .body(text.to_string())
+        .unwrap()
+}
+
+fn bad_data_request(text: &str) -> Response<Vec<u8>> {
+    Response::builder()
+        .header("Content-Type", "text/plain")
+        .status(400)
+        .body(text.as_bytes().to_vec())
+        .unwrap()
+}
+
+#[derive(Debug, Deserialize)]
+struct PeekArgs {
+    addr: String,
+    size: String,
+    format: String
+}
+
+#[derive(Debug, Deserialize)]
+struct PokeArgs {
+    addr: String
+}
+
+#[derive(Debug, Deserialize)]
+struct DlopenArgs {
+    library: String
+}
 
 #[get("/dlopen/self")]
 pub fn dlopen_self() -> String {
@@ -18,37 +64,77 @@ pub fn dlopen_self() -> String {
     format!("{:?}", library)
 }
 
-#[get("/dlopen/{lib_name}")]
-pub fn dlopen_library(lib_name: String) -> String {
-    match unsafe_ops::dlopen(&lib_name[..]) {
-        Ok(handle) => format!("dlopen_library: {:?} => {:?}", lib_name, handle).to_owned(),
-        Err(err) => format!("dlopen_library failed! library={:?}, error={:?}", lib_name, err)
-    }
+#[get("/dlopen")]
+pub fn dlopen_library(qs: Query<DlopenArgs>) -> Response<String> {
+    let args = qs.into_inner();
+    let lib_name = args.library.as_str();
+
+    let lib = unwrap_or_return!(unsafe_ops::dlopen(lib_name), bad_request("dlopen failed"));
+    
+    Response::builder()
+        .header("Content-Type", "text/plain")
+        .body(format!("{:p}", lib.into_raw()))
+        .unwrap()
 }
 
-#[get("/peek/{addr}")]
-pub fn peek(addr: String) -> String {
-    if !addr.starts_with("0x") {
-        return "Invalid value, expecting arg in hex notation (0x...)".to_owned();
-    }
 
-    let addr_primitive = match u64::from_str_radix(&addr[2..], 16) {
-        Ok(value) => value,
-        Err(_) => {
-            return format!("Failed to convert value {:?}", addr);
-        }
+fn decode_number(addr: String) -> std::result::Result<u64, ParseIntError> {
+    let (input, radix) = match addr.starts_with("0x") {
+        true => (&addr[2..], 16),
+        false => (addr.as_str(), 10)
     };
 
-    let data = unsafe_ops::peek(addr_primitive as *mut u64);
-    format!("0x{:x}", data)
+    return u64::from_str_radix(input, radix);
 }
 
-#[get("/poke")]
-pub fn poke() -> String {
-    "poke".to_owned()
+#[post("/poke")]
+pub fn poke(
+    qs: Query<PokeArgs>,
+    #[body] data: rweb::hyper::body::Bytes
+) -> Response<String> {
+    let args:PokeArgs = qs.into_inner();
+
+    let addr = unwrap_or_return!(decode_number(args.addr), bad_request("malformed address"));
+
+    println!("Writing {:?} at {:x}", data.len(), addr);
+
+    unsafe_ops::mem_write(addr as *mut u8, data.to_vec());
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .body("".to_string())
+        .unwrap()
 }
 
-#[router("/api", services(dlopen_self, dlopen_library, peek, poke))]
+#[get("/peek")]
+pub fn peek(qs: Query<PeekArgs>) -> Response<Vec<u8>>/* Vec<u8>*/ {
+    let args:PeekArgs = qs.into_inner();
+
+    let addr = unwrap_or_return!(decode_number(args.addr), bad_data_request("malformed address"));
+    let size:usize = unwrap_or_return!(decode_number(args.size), bad_data_request("malformed size")) as usize;
+
+    println!("Reading {:?} at {:x}", size, addr);
+
+    let data = unsafe_ops::mem_read(addr as *mut u8, size);
+
+    let response = match args.format.as_str() {
+        "base64" => Response::builder()
+            .header("Content-Type", "text/plain")
+            .header("Content-Transfer-Encoding", "base64")
+            .body(base64::encode(data).as_bytes().to_vec()),
+        "bin" => Response::builder()
+            .header("Content-Type", "application/octet-stream")
+            .body(data),
+        "hex" | _ => Response::builder()
+            .header("Content-Type", "text/plain")
+            .body(data.iter().map(
+                |x| format!("{:x}", x)
+            ).collect::<String>().as_bytes().to_vec()),
+    };
+    response.unwrap()
+}
+
+#[router("/api/v1", services(dlopen_self, dlopen_library, peek, poke))]
 fn api() {}
 
 pub fn start_server_task(address: IpAddr, port: u16) -> Result<()> {
