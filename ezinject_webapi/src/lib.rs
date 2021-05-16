@@ -1,7 +1,7 @@
 extern crate rweb;
 
 pub mod server;
-mod unsafe_ops;
+pub mod unsafe_ops;
 
 use std::time::Duration;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
