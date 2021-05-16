@@ -57,3 +57,13 @@ pub fn dlopen(library_name: &str) -> Result<Library> {
         unsafe {Library::new(library_name)?}
     )
 }
+
+type PfnGeneric = unsafe extern fn() -> c_void;
+
+pub fn dlsym(handle: libc::uintptr_t, sym: String) -> Result<Symbol<PfnGeneric>> {
+    unsafe {
+        let lib = Library::from_raw(handle as *mut c_void);
+        let func:Symbol<PfnGeneric> = lib.get(sym.as_bytes())?;
+        Ok(func)
+    }
+}

@@ -1,6 +1,9 @@
+use core::ffi;
 use std::{convert::TryInto, io::Bytes, num::ParseIntError, time::Duration, u64, usize};
 use std::net::{IpAddr};
 use std::convert;
+use libc::{c_void, uintptr_t};
+use libffi::{high::Arg, middle::{CodePtr, arg}};
 use tokio::sync::oneshot;
 use tokio::runtime::Runtime;
 
@@ -23,6 +26,14 @@ macro_rules! unwrap_or_return {
             Err(_) => return $res //return format!($msg),
         }
     }
+}
+
+fn internal_error(text: &str) -> Response<String> {
+    Response::builder()
+        .header("Content-Type", "text/plain")
+        .status(500)
+        .body(text.to_string())
+        .unwrap()
 }
 
 fn bad_request(text: &str) -> Response<String> {
@@ -58,10 +69,67 @@ struct DlopenArgs {
     library: String
 }
 
+#[derive(Debug, Deserialize)]
+struct DlsymArgs {
+    handle: String,
+    sym: String
+}
+
+#[derive(Debug, Deserialize)]
+struct CallArgs {
+    fptr: String,
+    args: Vec<String>
+}
+
+#[post("/call")]
+pub fn call(#[json] args: CallArgs) -> Response<String> {
+    let fptr_value = unwrap_or_return!(decode_number(args.fptr), bad_request("malformed fptr")) as *const c_void;
+    let code_ptr = CodePtr::from_ptr(fptr_value);
+    
+    let arg_values:Vec<uintptr_t> = args.args.iter().map(
+        |x| -> uintptr_t {
+            unwrap_or_return!(
+                decode_number(x.to_string()),
+                0 as uintptr_t
+            ) as uintptr_t
+        }
+    ).collect();
+
+    let mut ffi_args:Vec<Arg> = Vec::with_capacity(arg_values.len());
+
+    for i in 0..arg_values.len() {
+        let arg_ref = arg_values.get(i).unwrap();
+        ffi_args.push(Arg::new(arg_ref));
+    }
+
+    let result: *const c_void;
+    unsafe {
+        result = libffi::high::call::<*const c_void>(code_ptr, &ffi_args);
+    }
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .body(format!("{:p}", result))
+        .unwrap()
+}
+
 #[get("/dlopen/self")]
 pub fn dlopen_self() -> String {
     let library = unsafe_ops::dlopen_self();
     format!("{:?}", library)
+}
+
+#[get("/dlsym")]
+pub fn dlsym(qs: Query<DlsymArgs>) -> Response<String> {
+    let args = qs.into_inner();
+    let handle = unwrap_or_return!(decode_number(args.handle), bad_request("malformed handle"));
+
+    let fptr = unwrap_or_return!(unsafe_ops::dlsym(handle, args.sym), internal_error("dlsym failed"));
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .body(format!("{:p}", fptr.into_raw()))
+        .unwrap()
 }
 
 #[get("/dlopen")]
@@ -69,7 +137,7 @@ pub fn dlopen_library(qs: Query<DlopenArgs>) -> Response<String> {
     let args = qs.into_inner();
     let lib_name = args.library.as_str();
 
-    let lib = unwrap_or_return!(unsafe_ops::dlopen(lib_name), bad_request("dlopen failed"));
+    let lib = unwrap_or_return!(unsafe_ops::dlopen(lib_name), internal_error("dlopen failed"));
     
     Response::builder()
         .header("Content-Type", "text/plain")
@@ -78,13 +146,13 @@ pub fn dlopen_library(qs: Query<DlopenArgs>) -> Response<String> {
 }
 
 
-fn decode_number(addr: String) -> std::result::Result<u64, ParseIntError> {
+fn decode_number(addr: String) -> std::result::Result<libc::uintptr_t, ParseIntError> {
     let (input, radix) = match addr.starts_with("0x") {
         true => (&addr[2..], 16),
         false => (addr.as_str(), 10)
     };
 
-    return u64::from_str_radix(input, radix);
+    return uintptr_t::from_str_radix(input, radix);
 }
 
 #[post("/poke")]
@@ -134,7 +202,7 @@ pub fn peek(qs: Query<PeekArgs>) -> Response<Vec<u8>>/* Vec<u8>*/ {
     response.unwrap()
 }
 
-#[router("/api/v1", services(dlopen_self, dlopen_library, peek, poke))]
+#[router("/api/v1", services(dlopen_self, dlopen_library, dlsym, call, peek, poke))]
 fn api() {}
 
 pub fn start_server_task(address: IpAddr, port: u16) -> Result<()> {
