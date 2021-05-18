@@ -1,9 +1,9 @@
 use core::ffi;
-use std::{convert::TryInto, io::Bytes, num::ParseIntError, time::Duration, u64, usize};
+use std::{any::Any, convert::TryInto, io::Bytes, num::ParseIntError, time::Duration, u64, usize};
 use std::net::{IpAddr};
 use std::convert;
 use libc::{c_void, uintptr_t};
-use libffi::{high::Arg, middle::{CodePtr, arg}};
+use libffi::{high::{Arg, CType, Type}, middle::{Cif, CodePtr, FfiAbi, arg, ffi_abi_FFI_DEFAULT_ABI}, raw::ffi_arg};
 use tokio::sync::oneshot;
 use tokio::runtime::Runtime;
 
@@ -78,14 +78,15 @@ struct DlsymArgs {
 #[derive(Debug, Deserialize)]
 struct CallArgs {
     fptr: String,
-    args: Vec<String>
+    args: Vec<String>,
+    abi: Option<FfiAbi>
 }
 
 #[post("/call")]
 pub fn call(#[json] args: CallArgs) -> Response<String> {
     let fptr_value = unwrap_or_return!(decode_number(args.fptr), bad_request("malformed fptr")) as *const c_void;
     let code_ptr = CodePtr::from_ptr(fptr_value);
-    
+
     let arg_values:Vec<uintptr_t> = args.args.iter().map(
         |x| -> uintptr_t {
             unwrap_or_return!(
@@ -95,16 +96,23 @@ pub fn call(#[json] args: CallArgs) -> Response<String> {
         }
     ).collect();
 
-    let mut ffi_args:Vec<Arg> = Vec::with_capacity(arg_values.len());
+    let arg_types = vec![libffi::middle::Type::usize(); arg_values.len()];
+    let mut ffi_args:Vec<libffi::middle::Arg> = Vec::with_capacity(arg_values.len());
 
     for i in 0..arg_values.len() {
         let arg_ref = arg_values.get(i).unwrap();
-        ffi_args.push(Arg::new(arg_ref));
+        let arg = libffi::middle::Arg::new(arg_ref);
+        ffi_args.push(arg);
     }
 
+    let mut cif = libffi::middle::Cif::new(arg_types, libffi::middle::Type::pointer());
+    if let Some(value) = args.abi {
+        cif.set_abi(value);
+    }
+    
     let result: *const c_void;
     unsafe {
-        result = libffi::high::call::<*const c_void>(code_ptr, &ffi_args);
+        result = cif.call(code_ptr, &ffi_args);
     }
 
     Response::builder()
