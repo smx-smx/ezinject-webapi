@@ -82,6 +82,14 @@ struct CallArgs {
     abi: Option<FfiAbi>
 }
 
+#[cfg(unix)] const OS_IDENT:&str = "unix";
+#[cfg(windows)] const OS_IDENT:&str = "windows";
+
+#[get("/cfg")]
+pub fn cfg_info() -> String {
+    OS_IDENT.to_string()
+}
+
 #[post("/call")]
 pub fn call(#[json] args: CallArgs) -> Response<String> {
     let fptr_value = unwrap_or_return!(decode_number(args.fptr), bad_request("malformed fptr")) as *const c_void;
@@ -214,7 +222,7 @@ pub fn peek(qs: Query<PeekArgs>) -> Response<Vec<u8>>/* Vec<u8>*/ {
     response.unwrap()
 }
 
-#[router("/api/v1", services(dlopen_self, dlopen_library, dlsym, call, peek, poke))]
+#[router("/api/v1", services(cfg_info, dlopen_self, dlopen_library, dlsym, call, peek, poke))]
 fn api() {}
 
 pub fn start_server_task(address: IpAddr, port: u16) -> Result<()> {

@@ -24,12 +24,6 @@ pub extern "C" fn lib_preinit(user: &mut InjcodeUser) -> i32 {
 pub extern "C" fn lib_main(_argc: i32, _argv: *mut *mut i8) -> i32 {
     println!("Hello from Rust");
 
-    if let Err(_) = std::fs::write("/tmp/rusthook.log", "Lorem ipsum\n") {
-        println!("Failed to write file\n");
-    } else {
-        println!("File successfully written!\n");
-    }
-
     println!("Starting thread...\n");
     std::thread::spawn(|| {
         println!("Starting HTTP server");
