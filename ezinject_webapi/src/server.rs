@@ -228,29 +228,25 @@ fn api() {}
 pub fn start_server_task(address: IpAddr, port: u16) -> Result<()> {
     // Create the runtime
     let rt = Runtime::new().unwrap();
+
+    let (tx, rx) = oneshot::channel();
+
     // Execute the future, blocking the current thread until completion
     rt.block_on(async {    
-        let (tx, rx) = oneshot::channel();
-
         println!("[+] Creating server");
         let (_, server) = serve(api())
             .bind_with_graceful_shutdown((address, port), async {
                 rx.await.ok();
             }
         );
-        
+
         // Spawn the server into a runtime
         println!("[+] Spawning server");
-        tokio::task::spawn(server);
-        
-        println!("[+] Looping infinitely");
-        loop {
-            tokio::time::sleep(Duration::from_secs(10)).await;
-        }
-
-        println!("[+] Shutting down server");
-        let _ = tx.send(());
+        let _ = tokio::task::spawn(server).await.expect("server has panicked");
     });
 
-    Ok(())
+    println!("[+] Shutting down server");
+    let _ = tx.send(());
+
+    return Ok(())
 }
