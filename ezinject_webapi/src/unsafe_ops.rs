@@ -3,7 +3,7 @@ use std::{u8, usize};
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-#[cfg(unix)] type HandleType =  *mut c_void;
+#[cfg(unix)] type HandleType =  *mut libc::c_void;
 #[cfg(windows)] type HandleType = *mut winapi::shared::minwindef::HINSTANCE__;
 
 #[cfg(unix)] use libloading::os::unix::*;
